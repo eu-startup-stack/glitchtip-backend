@@ -16,6 +16,7 @@ from apps.alerts.api import router as alerts_router
 from apps.api_tokens.api import router as api_tokens_router
 from apps.api_tokens.models import APIToken
 from apps.api_tokens.schema import APITokenSchema
+from apps.authentik_auth.auth import AuthentikHeaderAuth
 from apps.difs.api import router as difs_router
 from apps.environments.api import router as environments_router
 from apps.event_ingest.api import router as event_ingest_router
@@ -51,7 +52,7 @@ api = NinjaAPI(
     parser=ORJSONParser(),
     title="GlitchTip API",
     urls_namespace="api",
-    auth=[TokenAuth(), SessionAuth()],
+    auth=[TokenAuth(), SessionAuth(), AuthentikHeaderAuth()],
     openapi_url="/openapi.json" if settings.ENABLE_OPENAPI else None,
 )
 

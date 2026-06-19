@@ -12,6 +12,11 @@ from glitchtip.email import GlitchTipEmail
 
 class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
     def is_open_for_signup(self, request, _sociallogin):
+        # Behind Authentik, account creation is JIT from the proxy
+        # headers -- the allauth signup flow must be closed off or it
+        # becomes a way to register without an Authentik-issued role.
+        if settings.AUTHENTIK_PROXY_AUTH_ENABLED:
+            return False
         return is_social_apps_user_registration_open()
 
 
@@ -34,6 +39,11 @@ class CustomDefaultAccountAdapter(DefaultAccountAdapter):
         return super().render_mail(template_prefix, email, context, headers)
 
     def is_open_for_signup(self, request):
+        # Behind Authentik, account creation is JIT from the proxy
+        # headers -- the allauth signup flow must be closed off or it
+        # becomes a way to register without an Authentik-issued role.
+        if settings.AUTHENTIK_PROXY_AUTH_ENABLED:
+            return False
         return is_user_registration_open()
 
     def save_user(self, request, user, form, commit=True):

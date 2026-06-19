@@ -49,6 +49,21 @@ urlpatterns = [
     ),
 ]
 
+# When running behind Authentik, the SPA's own login/register pages would
+# only confuse users (they'd just bounce back to "you have no role" or
+# POST to allauth with no body). Redirect those URLs to "/" so the SPA
+# makes the authenticated call to /api/0/. non-permanent so it's easy to
+# revert if the feature is ever turned off.
+if settings.AUTHENTIK_PROXY_AUTH_ENABLED:
+    urlpatterns += [
+        path("login", RedirectView.as_view(url="/", permanent=False)),
+        path("login/", RedirectView.as_view(url="/", permanent=False)),
+        path("register", RedirectView.as_view(url="/", permanent=False)),
+        path("register/", RedirectView.as_view(url="/", permanent=False)),
+        path("auth", RedirectView.as_view(url="/", permanent=False)),
+        path("auth/", RedirectView.as_view(url="/", permanent=False)),
+    ]
+
 if "django.contrib.admin" in settings.INSTALLED_APPS:
     if settings.GLITCHTIP_INSTANCE_NAME:
         admin.site.site_header = settings.GLITCHTIP_INSTANCE_NAME

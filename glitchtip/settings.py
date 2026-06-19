@@ -355,6 +355,14 @@ MAINTENANCE_EVENT_FREEZE = env.bool("MAINTENANCE_EVENT_FREEZE", False)
 
 GLITCHTIP_ENABLE_MCP = env.bool("GLITCHTIP_ENABLE_MCP", False)
 
+# Authentik proxy-header authentication. When AUTHENTIK_PROXY_AUTH_ENABLED
+# is True, the app trusts X-authentik-* headers from requests whose TCP
+# peer is in AUTHENTIK_TRUSTED_PROXIES. See apps/authentik_auth/.
+AUTHENTIK_PROXY_AUTH_ENABLED = env.bool("AUTHENTIK_PROXY_AUTH_ENABLED", False)
+AUTHENTIK_TRUSTED_PROXIES = env.list("AUTHENTIK_TRUSTED_PROXIES", str, [])
+AUTHENTIK_GROUP_PREFIX = env.str("AUTHENTIK_GROUP_PREFIX", "glitchtip")
+AUTHENTIK_ROLE_SYNC_CACHE_TTL = env.int("AUTHENTIK_ROLE_SYNC_CACHE_TTL", 300)
+
 # For development purposes only, prints out inbound event store json
 EVENT_STORE_DEBUG = env.bool("EVENT_STORE_DEBUG", False)
 
@@ -555,6 +563,7 @@ INSTALLED_APPS += [
     "django_vtasks",
     "glitchtip",
     "apps.alerts",
+    "apps.authentik_auth",
     "apps.environments",
     "apps.organizations_ext",
     "apps.users",
@@ -614,6 +623,12 @@ MIDDLEWARE += [
 
 if "GRANIAN_STATIC_PATH_MOUNT" in os.environ:
     MIDDLEWARE.remove("whitenoise.middleware.WhiteNoiseMiddleware")
+
+# Authentik proxy-header auth. Appended (not inserted) so it runs AFTER
+# django.contrib.auth.middleware.AuthenticationMiddleware -- it needs that
+# middleware to have set request.user first so it can override it.
+if AUTHENTIK_PROXY_AUTH_ENABLED:
+    MIDDLEWARE.append("apps.authentik_auth.middleware.AuthentikProxyMiddleware")
 
 if ENABLE_OBSERVABILITY_API:
     MIDDLEWARE.insert(0, "django_prometheus.middleware.PrometheusBeforeMiddleware")
