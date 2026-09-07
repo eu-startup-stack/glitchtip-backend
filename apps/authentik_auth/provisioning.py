@@ -60,6 +60,20 @@ async def get_or_create_user(email: str, name: str) -> User:
     # Ensure allauth sees a verified primary email; Authentik already
     # verified ownership upstream, so we never want a SPA "verify your
     # email" prompt to show up for these users.
+    #
+    # allauth's EmailAddress has a partial UNIQUE constraint on
+    # (user, primary) WHERE primary=True, so at most one row per user
+    # may be primary. If the user already has a different primary row
+    # (e.g. a password-signup email from before Authentik took over)
+    # we MUST demote it BEFORE inserting/setting primary=True on the
+    # Authentik row — otherwise the constraint trips and the JIT
+    # provision raises IntegrityError on the request path. Secondary
+    # (non-primary) rows are left untouched.
+    await (
+        EmailAddress.objects.filter(user=user, primary=True)
+        .exclude(email=email)
+        .aupdate(primary=False)
+    )
     existing = await EmailAddress.objects.filter(user=user, email=email).afirst()
     if existing is None:
         await EmailAddress.objects.acreate(

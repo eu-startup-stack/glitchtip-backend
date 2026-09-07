@@ -296,3 +296,93 @@ class AuthentikMiddlewareTestCase(TestCase):
         self.assertIsNotNone(body["user"])
         self.assertEqual(body["user"]["email"], email)
         self.assertEqual(body["user"]["name"], "Ivy")
+
+    # --- JIT reconciliation: demote a pre-existing primary email ---
+    def test_jit_replaces_different_primary_email(self):
+        """A user with a different primary email (e.g. left over from
+        password signup before Authentik took over) must have that
+        primary demoted when Authentik later sends a new address, and
+        the Authentik address must end up verified + primary.
+
+        Without the ordered reconciliation in provisioning this call
+        trips allauth's partial UNIQUE constraint on (user, primary)
+        WHERE primary=True and the request 500s.
+        """
+        from allauth.account.models import EmailAddress
+
+        new_email = "jack-new@example.com"
+        old_email = "jack-old@example.com"
+        # Pre-existing user with a verified primary email that is NOT
+        # the email Authentik will send. This is the typical "we moved
+        # from password signup to SSO" migration case.
+        existing_user = User.objects.create(email=old_email, is_active=True)
+        old_address = EmailAddress.objects.create(
+            user=existing_user, email=old_email, verified=True, primary=True
+        )
+        # Sanity: the seeded row really is the user's only primary.
+        self.assertTrue(old_address.primary)
+
+        response = self.client.get(
+            "/api/0/",
+            REMOTE_ADDR=_TRUSTED_PROXY,
+            HTTP_X_AUTHENTIK_EMAIL=new_email,
+            HTTP_X_AUTHENTIK_NAME="Jack",
+            HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        # The new Authentik address exists, is verified, and is primary.
+        new_address = EmailAddress.objects.get(user=existing_user, email=new_email)
+        self.assertTrue(new_address.verified)
+        self.assertTrue(new_address.primary)
+
+        # The old primary was demoted (NOT deleted, NOT still primary).
+        old_address.refresh_from_db()
+        self.assertFalse(old_address.primary)
+        self.assertTrue(old_address.verified)
+
+        # Exactly one primary row exists for this user, no matter how
+        # many legacy rows the user accumulated.
+        primaries = EmailAddress.objects.filter(user=existing_user, primary=True)
+        self.assertEqual(primaries.count(), 1)
+        self.assertEqual(primaries.first().email, new_email)
+
+    def test_jit_promotes_existing_authentik_email_to_primary(self):
+        """When a pre-existing non-primary EmailAddress row matches the
+        Authentik-supplied email, JIT must promote it to primary after
+        demoting whatever was primary before.
+        """
+        from allauth.account.models import EmailAddress
+
+        new_email = "kira-new@example.com"
+        old_email = "kira-old@example.com"
+        existing_user = User.objects.create(email=new_email, is_active=True)
+        # Pre-existing primary that we'll need to demote.
+        old_address = EmailAddress.objects.create(
+            user=existing_user, email=old_email, verified=True, primary=True
+        )
+        # Pre-existing Authentik row, but as a non-primary secondary
+        # (e.g. left over from a previous request where reconciliation
+        # didn't run).
+        new_address = EmailAddress.objects.create(
+            user=existing_user, email=new_email, verified=False, primary=False
+        )
+
+        response = self.client.get(
+            "/api/0/",
+            REMOTE_ADDR=_TRUSTED_PROXY,
+            HTTP_X_AUTHENTIK_EMAIL=new_email,
+            HTTP_X_AUTHENTIK_NAME="Kira",
+            HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        new_address.refresh_from_db()
+        old_address.refresh_from_db()
+        self.assertTrue(new_address.primary)
+        self.assertTrue(new_address.verified)
+        self.assertFalse(old_address.primary)
+
+        primaries = EmailAddress.objects.filter(user=existing_user, primary=True)
+        self.assertEqual(primaries.count(), 1)
+        self.assertEqual(primaries.first().email, new_email)
