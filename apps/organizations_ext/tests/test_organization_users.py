@@ -1,4 +1,5 @@
 import json
+from typing import ClassVar
 
 from django.core import mail
 from django.core.cache import cache
@@ -462,4 +463,98 @@ class OrganizationUsersTestCase(TestCase):
         self.org_user.save()
         res = self.client.post(url)
         self.assertTrue(res.json()["isOwner"], "Owner role may set org member as owner")
+
+
+class AuthentikInviteAcceptanceTestCase(TestCase):
+    """Regression test: accepting an org invitation via Authentik
+    proxy headers must attach ``request.auth.user_id`` to the pending
+    invite row, the same as it does for session-authenticated callers.
+
+    ``apps.organizations_ext.api.accept_invite`` historically used
+    ``await aget_user(request)`` to identify the accepting user. The
+    Authentik proxy middleware does NOT log anyone in (no Django
+    session), so the fix replaces that lookup with
+    ``User.objects.aget(id=request.auth.user_id)`` -- which works for
+    Token, Session, AND Authentik auth classes.
+
+    The Authentik middleware also runs ``sync_org_memberships`` on
+    first sight of the email, which would otherwise create a second
+    ``OrganizationUser`` row for (org, user=X) and trip the
+    (user, organization) UNIQUE constraint when the accept binds the
+    invite. To exercise the SUCCESS path cleanly, this test
+    pre-primes the per-user role-sync cache so sync is a no-op.
+    """
+
+    AUTHENTIK_SETTINGS: ClassVar[dict] = {
+        "AUTHENTIK_PROXY_AUTH_ENABLED": True,
+        "AUTHENTIK_TRUSTED_PROXIES": ["10.0.0.1"],
+        "AUTHENTIK_GROUP_PREFIX": "glitchtip",
+        "AUTHENTIK_ROLE_SYNC_CACHE_TTL": 300,
+    }
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.owner = baker.make("users.user")
+        cls.organization = baker.make("organizations_ext.Organization")
+        cls.organization.add_user(cls.owner, OrganizationUserRole.OWNER)
+        cls.members_url = reverse(
+            "api:list_organization_members", args=[cls.organization.slug]
+        )
+
+    def setUp(self):
+        # Owner (session-auth) creates the invite.
+        self.client.force_login(self.owner)
+
+    def _create_invite(self, email: str) -> tuple[str, str]:
+        """Return ``(org_user_id, token)`` extracted from the invite email."""
+        data = {
+            "email": email,
+            "orgRole": OrganizationUserRole.MANAGER.label.lower(),
+            "teamRoles": [],
+        }
+        res = self.client.post(self.members_url, data, content_type="application/json")
+        self.assertEqual(res.status_code, 201)
+        body = mail.outbox[-1].body
+        body_split = body[body.find("http://localhost:8000/accept/") :].split("/")
+        return body_split[4], body_split[5]
+
+    @override_settings(**AUTHENTIK_SETTINGS)
+    def test_authentik_accept_invite_attaches_invited_user(self):
+        """SSO caller accepts an invite; the resolved user is bound
+        to the invite row and the email is cleared."""
+        from apps.authentik_auth.mapping import parse_groups
+        from apps.authentik_auth.provisioning import groups_hash
+        from apps.users.models import User
+
+        invited_email = "lara@example.com"
+        org_user_id, token = self._create_invite(invited_email)
+
+        # Pre-create the Authentik-side user so JIT is a no-op and we
+        # can pre-prime the role-sync cache. With the cache primed,
+        # ``sync_org_memberships`` returns immediately and does NOT
+        # create a duplicate ``OrganizationUser`` row that would
+        # otherwise collide with the invite row on save.
+        invited_user = User.objects.create(email=invited_email, is_active=True)
+        groups = parse_groups("glitchtip-member")
+        cache.set(f"authentik_roles:{invited_user.id}:{groups_hash(groups)}", True)
+
+        url = reverse("api:get_accept_invite", args=[org_user_id, token])
+        response = self.client.post(
+            url,
+            data=json.dumps({"acceptInvite": True}),
+            content_type="application/json",
+            REMOTE_ADDR="10.0.0.1",
+            HTTP_X_AUTHENTIK_EMAIL=invited_email,
+            HTTP_X_AUTHENTIK_NAME="Lara",
+            HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+        )
+
+        # The fix routes identity resolution through request.auth, so
+        # the invite row is rebound to the Authentik-provisioned user
+        # instead of the (anonymous) session user.
+        self.assertEqual(response.status_code, 200)
+        org_user = OrganizationUser.objects.get(pk=org_user_id)
+        self.assertEqual(org_user.user_id, invited_user.id)
+        self.assertIsNone(org_user.email)
+        self.assertFalse(org_user.pending)
         self.assertEqual(self.organization.owners.count(), 1)

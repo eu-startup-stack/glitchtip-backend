@@ -1,6 +1,5 @@
 from asgiref.sync import sync_to_async
 from django.conf import settings
-from django.contrib.auth import aget_user
 from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import aget_object_or_404
@@ -421,7 +420,20 @@ async def accept_invite(
     """Accepts invite to organization"""
     org_user = await validate_token(org_user_id, token)
     if payload.accept_invite:
-        org_user.user = await aget_user(request)
+        # Resolve the accepting user from django-ninja's auth chain
+        # rather than from the Django session. The Authentik proxy
+        # middleware does NOT log anyone in (Global Constraint: no
+        # Django session), so ``aget_user(request)`` would return the
+        # anonymous user for an SSO-accepted invite and silently bind
+        # the membership to ``AnonymousUser``. ``request.auth.user_id``
+        # is populated by every registered auth class (TokenAuth,
+        # SessionAuth, AuthentikHeaderAuth), so it covers all three.
+        #
+        # If the resolved user is already a member of this org the
+        # (user, organization) unique_together constraint trips; let
+        # that propagate rather than swallowing it — the caller should
+        # see the conflict, not a silently-rewritten membership.
+        org_user.user = await User.objects.aget(id=request.auth.user_id)
         org_user.email = None
         await org_user.asave()
     org_user = (
