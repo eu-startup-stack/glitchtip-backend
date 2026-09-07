@@ -271,3 +271,28 @@ class AuthentikMiddlewareTestCase(TestCase):
         # Cached: the second request did NOT re-sync, so the manual
         # edit survives.
         self.assertEqual(org_user.role, OrganizationUserRole.MEMBER)
+
+    # --- additional: API root returns the Authentik-provisioned user ---
+    def test_api_root_returns_authentik_user(self):
+        """/api/0/ is auth-free so django-ninja's auth chain does not run.
+
+        The Authentik proxy middleware still provisions a local ``User``
+        and stashes the identity on ``request.authentik_auth``. The view
+        must surface that user (not just ``null``) so the SPA knows who
+        it is talking to on first paint.
+        """
+        email = "ivy@example.com"
+        response = self.client.get(
+            "/api/0/",
+            REMOTE_ADDR=_TRUSTED_PROXY,
+            HTTP_X_AUTHENTIK_EMAIL=email,
+            HTTP_X_AUTHENTIK_NAME="Ivy",
+            HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        # The narrow-fallback in api_root must populate user from the
+        # Authentik auth object, not from the (anonymous) session.
+        self.assertIsNotNone(body["user"])
+        self.assertEqual(body["user"]["email"], email)
+        self.assertEqual(body["user"]["name"], "Ivy")

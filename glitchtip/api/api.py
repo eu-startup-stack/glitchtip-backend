@@ -264,11 +264,24 @@ async def api_root(request: HttpRequest):
     """/api/0/ gives information about the server and current user"""
     user_data = None
     auth_data = None
-    user = await aget_user(request)
-    if user.is_authenticated:
+    # ``/api/0/`` is auth-free, so django-ninja's auth chain does NOT
+    # populate ``request.auth``. The Authentik proxy middleware still
+    # stashes the resolved identity on ``request.authentik_auth`` for
+    # these routes, so prefer that over ``aget_user`` (which would also
+    # work via the middleware-set ``request.user``, but is intentionally
+    # bypassed here to keep session-based identity resolution narrow).
+    # No session is written — this view is read-only.
+    authentik_auth = getattr(request, "authentik_auth", None)
+    if authentik_auth is not None:
         user_data = await User.objects.prefetch_related("socialaccount_set").aget(
-            id=user.id
+            id=authentik_auth.user_id
         )
+    else:
+        user = await aget_user(request)
+        if user.is_authenticated:
+            user_data = await User.objects.prefetch_related("socialaccount_set").aget(
+                id=user.id
+            )
 
     # Fetch api auth header to get api token
     openapi_scheme = "bearer"
