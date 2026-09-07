@@ -299,23 +299,34 @@ class AuthentikMiddlewareTestCase(TestCase):
 
     # --- JIT reconciliation: demote a pre-existing primary email ---
     def test_jit_replaces_different_primary_email(self):
-        """A user with a different primary email (e.g. left over from
-        password signup before Authentik took over) must have that
-        primary demoted when Authentik later sends a new address, and
-        the Authentik address must end up verified + primary.
+        """A user whose primary EmailAddress is a *different* address
+        than what Authentik sends (e.g. left over from a password-signup
+        era before SSO took over) must have that primary demoted when
+        Authentik later inserts a row for the new address, and the new
+        Authentik address must end up verified + primary.
 
         Without the ordered reconciliation in provisioning this call
         trips allauth's partial UNIQUE constraint on (user, primary)
         WHERE primary=True and the request 500s.
+
+        The User row MUST already carry ``email=new_email`` — the
+        middleware resolves the user by ``User.email`` via
+        ``aget_or_create(email=email)`` (provisioning.py:41), so a
+        user whose ``email`` is still the old address would be left
+        alone and a brand-new User would be created for the new
+        address. This test exercises the same user with a stale
+        primary, not a separate user per address.
         """
         from allauth.account.models import EmailAddress
 
         new_email = "jack-new@example.com"
         old_email = "jack-old@example.com"
-        # Pre-existing user with a verified primary email that is NOT
-        # the email Authentik will send. This is the typical "we moved
-        # from password signup to SSO" migration case.
-        existing_user = User.objects.create(email=old_email, is_active=True)
+        # Seed: the user's account email is the *new* address (because
+        # they have already logged in once via Authentik and the row
+        # reflects that), but they still carry a stale verified+primary
+        # EmailAddress row for the old address. This is the "dangling
+        # primary" state the reconciler has to clean up.
+        existing_user = User.objects.create(email=new_email, is_active=True)
         old_address = EmailAddress.objects.create(
             user=existing_user, email=old_email, verified=True, primary=True
         )
