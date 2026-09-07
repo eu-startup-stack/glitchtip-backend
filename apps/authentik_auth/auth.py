@@ -10,7 +10,7 @@ declares no auth and the rest of the chain (``TokenAuth``,
 ``SessionAuth``) takes over.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 from django.conf import settings
 from django.http import HttpRequest
@@ -22,13 +22,26 @@ class AuthentikHeaderAuth(HttpBearer):
 
     openapi_scheme = "authentik"
 
-    def __call__(self, request: HttpRequest) -> Optional[Any]:
+    async def __call__(self, request: HttpRequest) -> Any | None:
+        # ``__call__`` MUST be a coroutine: ``AuthentikHeaderAuth`` declares
+        # ``async def authenticate`` (kept below to satisfy ``HttpBearer``'s
+        # abstract base), so ``AuthBase.__init__`` sets ``self.is_async = True``
+        # via ``is_async_callable``. ninja's ``AsyncOperation._run_authentication``
+        # then does ``cor = callback(request); result = await cor`` — i.e. it
+        # unconditionally awaits whatever ``__call__`` returns. A sync ``__call__``
+        # that returns the bare ``Auth`` dataclass tripped this contract and
+        # raised ``TypeError: object Auth can't be used in 'await' expression``,
+        # which ``ninja`` routed through ``on_exception`` and surfaced as a 500
+        # on every Authentik-authenticated request to a protected route.
         if not getattr(settings, "AUTHENTIK_PROXY_AUTH_ENABLED", False):
             return None
         return getattr(request, "authentik_auth", None)
 
-    async def authenticate(self, request: HttpRequest, token: str) -> Optional[Any]:
-        # The middleware already produced the Auth object via __call__.
-        # This method exists only to satisfy HttpBearer's abstract base
-        # and is never invoked in practice.
+    async def authenticate(self, request: HttpRequest, token: str) -> Any | None:
+        # The middleware already produced the Auth object via ``__call__``
+        # before this class is reached, so ``authenticate`` would only run
+        # if ``HttpBearer.__call__`` were the entry point and tried to pull
+        # a token from the ``Authorization`` header — which it doesn't for
+        # Authentik requests. Kept async purely so ``is_async_callable`` keeps
+        # ``self.is_async = True`` and ninja continues to await ``__call__``.
         return None
