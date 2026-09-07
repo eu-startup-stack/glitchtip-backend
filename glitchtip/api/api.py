@@ -265,11 +265,15 @@ async def api_root(request: HttpRequest):
     user_data = None
     auth_data = None
     # ``/api/0/`` is auth-free, so django-ninja's auth chain does NOT
-    # populate ``request.auth``. The Authentik proxy middleware still
-    # stashes the resolved identity on ``request.authentik_auth`` for
-    # these routes, so prefer that over ``aget_user`` (which would also
-    # work via the middleware-set ``request.user``, but is intentionally
-    # bypassed here to keep session-based identity resolution narrow).
+    # populate ``request.auth``. The Authentik proxy middleware stashes
+    # the resolved identity on ``request.authentik_auth`` for these
+    # routes, so prefer that over ``aget_user``: ``aget_user`` reads
+    # from ``request.session``, not from ``request.user``, and the
+    # middleware deliberately writes no session (so SSO callers
+    # remain session-less), which means ``aget_user`` returns
+    # ``AnonymousUser`` and ``user_data`` would stay ``None`` for
+    # every Authentik caller. Do NOT remove this branch — it is the
+    # only path that resolves the Authentik identity on this route.
     # No session is written — this view is read-only.
     authentik_auth = getattr(request, "authentik_auth", None)
     if authentik_auth is not None:
