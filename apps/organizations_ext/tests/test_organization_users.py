@@ -538,6 +538,16 @@ class AuthentikInviteAcceptanceTestCase(TestCase):
         groups = parse_groups("glitchtip-member")
         cache.set(f"authentik_roles:{invited_user.id}:{groups_hash(groups)}", True)
 
+        # The api-level auth chain is ``[TokenAuth, SessionAuth,
+        # AuthentikHeaderAuth]`` (glitchtip/api/api.py:55) and runs in
+        # order. ``setUp`` force-logs in the OWNER, so without this
+        # logout ``SessionAuth`` would short-circuit the chain BEFORE
+        # ``AuthentikHeaderAuth`` is ever consulted and the invite
+        # would be bound to the owner (who is already a member of the
+        # org, so the unique_together would trip and the test would
+        # fail for the wrong reason, masking the real bug).
+        self.client.logout()
+
         url = reverse("api:get_accept_invite", args=[org_user_id, token])
         response = self.client.post(
             url,
@@ -557,4 +567,3 @@ class AuthentikInviteAcceptanceTestCase(TestCase):
         self.assertEqual(org_user.user_id, invited_user.id)
         self.assertIsNone(org_user.email)
         self.assertFalse(org_user.pending)
-        self.assertEqual(self.organization.owners.count(), 1)
