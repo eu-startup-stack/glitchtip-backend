@@ -132,4 +132,28 @@ class AuthentikProxyMiddleware:
 
         request.user = user
         request.authentik_auth = Auth(user.id, "session")
+        # ninja's SessionAuth (glitchtip/api/authentication.py) extends
+        # ninja.security.APIKeyCookie, which runs Django's CSRF check
+        # BEFORE AuthentikHeaderAuth is ever reached in the auth chain
+        # (glitchtip/api/api.py: [TokenAuth, SessionAuth,
+        # AuthentikHeaderAuth]). This middleware deliberately never
+        # writes a Django session, so there is no ambient session
+        # cookie for a forged cross-site request to ride on -- the
+        # trust boundary for this request is the _is_trusted_proxy
+        # check above, not a CSRF token. Left alone, every Authentik
+        # SSO POST/PUT/DELETE without a Django CSRF token 403s in
+        # production, purely because of auth-chain ordering, not
+        # because the request is actually forgeable the way session
+        # CSRF protects against.
+        #
+        # _ninja_csrf_exempt is ninja's own documented escape hatch
+        # (ninja.security.apikey.APIKeyBase._get_key checks exactly
+        # this request attribute) -- normally set per-operation by a
+        # `csrf_exempt=True` decorator, set here per-request instead,
+        # and ONLY on requests this middleware has already positively
+        # authenticated via the trusted-proxy boundary above. Plain
+        # session-based browser auth (no Authentik headers, or headers
+        # from an untrusted peer) never reaches this line, so it stays
+        # fully CSRF-checked.
+        request._ninja_csrf_exempt = True
         return await self.get_response(request)

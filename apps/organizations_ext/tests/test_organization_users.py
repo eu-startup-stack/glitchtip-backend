@@ -617,3 +617,50 @@ class AuthentikInviteAcceptanceTestCase(TestCase):
             ).count(),
             1,
         )
+
+    def test_authentik_accept_invite_succeeds_without_csrf_token(self):
+        """Regression test for the CSRF-on-SSO-POST bug.
+
+        ninja's auth chain is ``[TokenAuth, SessionAuth,
+        AuthentikHeaderAuth]`` (glitchtip/api/api.py:55); ``SessionAuth``
+        extends ninja's ``APIKeyCookie``, which runs Django's CSRF check
+        BEFORE ``AuthentikHeaderAuth`` is ever reached. The default test
+        client sets ``enforce_csrf_checks=False``, which is why every
+        other test in this file -- including the two above -- would pass
+        even if this bug were still present. This test turns CSRF
+        enforcement back on to prove the fix in
+        ``AuthentikProxyMiddleware`` (setting ``request._ninja_csrf_exempt``
+        on requests it has already authenticated via the trusted-proxy
+        boundary) actually works.
+        """
+        from django.test import Client
+
+        from apps.authentik_auth.mapping import parse_groups
+        from apps.authentik_auth.provisioning import groups_hash
+        from apps.users.models import User
+
+        invited_email = "mia@example.com"
+        org_user_id, token = self._create_invite(invited_email)
+
+        invited_user = User.objects.create(email=invited_email, is_active=True)
+        groups = parse_groups("glitchtip-member")
+        cache.set(f"authentik_roles:{invited_user.id}:{groups_hash(groups)}", True)
+
+        self.client.logout()
+
+        csrf_client = Client(enforce_csrf_checks=True)
+        url = reverse("api:get_accept_invite", args=[org_user_id, token])
+        with override_settings(**self.AUTHENTIK_SETTINGS):
+            response = csrf_client.post(
+                url,
+                data=json.dumps({"acceptInvite": True}),
+                content_type="application/json",
+                REMOTE_ADDR="10.0.0.1",
+                HTTP_X_AUTHENTIK_EMAIL=invited_email,
+                HTTP_X_AUTHENTIK_NAME="Mia",
+                HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        org_user = OrganizationUser.objects.get(pk=org_user_id)
+        self.assertEqual(org_user.user_id, invited_user.id)
