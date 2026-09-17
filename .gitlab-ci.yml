@@ -40,6 +40,19 @@ test-min:
     ENABLE_TEST_API: "true"
     ENABLE_OPEN_USER_REGISTRATION: "true"
     VALKEY_URL: "redis://redis:6379"
+    # apps/authentik_auth/tests/ and AuthentikInviteAcceptanceTestCase
+    # (apps/organizations_ext/tests) drive the real middleware via the
+    # Django test client and rely on it being present in MIDDLEWARE.
+    # glitchtip/settings.py:630-631 appends AuthentikProxyMiddleware to
+    # MIDDLEWARE ONLY when this var is truthy at settings-import time --
+    # a plain Python list built once, not re-evaluated by the tests'
+    # own override_settings(AUTHENTIK_PROXY_AUTH_ENABLED=True) calls.
+    # Without this var set here, at process start, every one of those
+    # tests exercises a request pipeline that never runs the middleware
+    # at all. AUTHENTIK_TRUSTED_PROXIES stays at its default ([]), so
+    # this is a no-op for every other test in the suite -- individual
+    # Authentik tests set their own trusted proxies via override_settings.
+    AUTHENTIK_PROXY_AUTH_ENABLED: "true"
   services:
     - postgres:14
     - name: redis:7
@@ -66,6 +79,9 @@ test-latest:
     ENABLE_TEST_API: "true"
     ENABLE_OPEN_USER_REGISTRATION: "true"
     VALKEY_URL: "redis://redis:6379"
+    # See test-min's identical variable for why this is required for
+    # apps/authentik_auth/tests/ to exercise anything.
+    AUTHENTIK_PROXY_AUTH_ENABLED: "true"
     GLITCHTIP_ENABLE_DUCKDB: "true"
     GLITCHTIP_COLD_STORAGE_BUCKET: glitchtip-cold
     AWS_ACCESS_KEY_ID: minioadmin

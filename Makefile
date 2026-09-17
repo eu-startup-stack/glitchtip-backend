@@ -70,6 +70,14 @@ stop:					# Stop all containers
 	$(COMPOSE) down
 
 test:					# Execute `pytest` and coverage report inside `web` container
-	$(COMPOSE_RUN) web python manage.py test
+	# AUTHENTIK_PROXY_AUTH_ENABLED=true: apps/authentik_auth/tests/ and
+	# AuthentikInviteAcceptanceTestCase drive AuthentikProxyMiddleware via
+	# the real Django test client, but glitchtip/settings.py only appends
+	# it to MIDDLEWARE when this var is truthy at process start -- the
+	# tests' own override_settings(AUTHENTIK_PROXY_AUTH_ENABLED=True)
+	# cannot retroactively inject it. compose.yml's default environment
+	# intentionally leaves this unset (interactive `docker compose up` dev
+	# stays on plain session auth); it is set here, for the test run only.
+	$(COMPOSE_RUN) -e AUTHENTIK_PROXY_AUTH_ENABLED=true web python manage.py test
 
 .PHONY: bash build build-no-cache clean dbshell help kill lint lint-check locust-start locust-stop locust-restart logs migrate migrations partman-start partman-stop partman-restart restart shell start stop test
