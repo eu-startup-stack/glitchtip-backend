@@ -567,3 +567,53 @@ class AuthentikInviteAcceptanceTestCase(TestCase):
         self.assertEqual(org_user.user_id, invited_user.id)
         self.assertIsNone(org_user.email)
         self.assertFalse(org_user.pending)
+
+    @override_settings(**AUTHENTIK_SETTINGS)
+    def test_authentik_accept_invite_survives_a_live_role_sync(self):
+        """Regression test for the duplicate-membership race, exercised
+        with NO cache priming -- this is the actual first-contact path a
+        real invited user takes, not the artificially-quieted success
+        path the test above proves.
+
+        AuthentikProxyMiddleware runs on this very POST (and on any
+        earlier authenticated request the invited user made) and calls
+        ``sync_org_memberships``, which iterates every non-deleted org
+        including the one this invite is for. Before
+        ``apps.authentik_auth.provisioning.sync_org_memberships`` learned
+        to skip an org with a pending invite matching the user's email,
+        that call created a SEPARATE ``OrganizationUser(user=invited_
+        user)`` row here, and this test's own accept POST then collided
+        with it on the ``(user, organization)`` unique constraint --
+        turning an ordinary invite acceptance into an unhandled 500.
+        """
+        invited_email = "noor@example.com"
+        org_user_id, token = self._create_invite(invited_email)
+
+        self.client.logout()
+
+        url = reverse("api:get_accept_invite", args=[org_user_id, token])
+        response = self.client.post(
+            url,
+            data=json.dumps({"acceptInvite": True}),
+            content_type="application/json",
+            REMOTE_ADDR="10.0.0.1",
+            HTTP_X_AUTHENTIK_EMAIL=invited_email,
+            HTTP_X_AUTHENTIK_NAME="Noor",
+            HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        org_user = OrganizationUser.objects.get(pk=org_user_id)
+        self.assertIsNotNone(org_user.user_id)
+        self.assertEqual(org_user.user.email, invited_email)
+        self.assertFalse(org_user.pending)
+        # Exactly one membership row exists for (user, organization) --
+        # the pending invite row itself, now bound. sync_org_memberships
+        # must not have created a second, competing row.
+        self.assertEqual(
+            OrganizationUser.objects.filter(
+                organization_id=org_user.organization_id,
+                user_id=org_user.user_id,
+            ).count(),
+            1,
+        )

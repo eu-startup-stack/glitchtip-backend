@@ -112,6 +112,26 @@ async def sync_org_memberships(
         ).afirst()
 
         if org_user is None:
+            # A pending, human-authored invite for this exact org/email
+            # takes priority over an auto-synced membership. Without
+            # this check, this call -- which runs on every authenticated
+            # request, including the invite-accept POST itself -- would
+            # create a SEPARATE OrganizationUser(user=user) row here,
+            # and apps.organizations_ext.api.accept_invite's later
+            # `org_user.user = user; await org_user.asave()` on the
+            # pending row would then collide with it on the
+            # (user, organization) unique constraint, turning an
+            # ordinary invite acceptance into an unhandled 500. Leave
+            # the org alone: once the invite is accepted the pending
+            # row itself carries `user`, so `org_user is None` stops
+            # being true for this org and normal role-sync (including
+            # the ownerless-guard branch below) resumes from then on.
+            has_pending_invite = await OrganizationUser.objects.filter(
+                organization=org, user__isnull=True, email__iexact=user.email
+            ).aexists()
+            if has_pending_invite:
+                continue
+
             # Ownerless guard on creation: an empty org gets the new
             # user as OWNER, otherwise their resolved role.
             org_has_members = await OrganizationUser.objects.filter(

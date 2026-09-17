@@ -397,3 +397,39 @@ class AuthentikMiddlewareTestCase(TestCase):
         primaries = EmailAddress.objects.filter(user=existing_user, primary=True)
         self.assertEqual(primaries.count(), 1)
         self.assertEqual(primaries.first().email, new_email)
+
+    # --- sync must not race ahead of a pending, human-authored invite ---
+    def test_sync_does_not_create_membership_when_invite_is_pending(self):
+        """A pending invite (OrganizationUser with user=None, email set)
+        must not be raced by an auto-synced membership row for the same
+        org/email. Without this, accepting the invite later collides on
+        the (user, organization) unique constraint -- see
+        apps.organizations_ext.tests.test_organization_users
+        .AuthentikInviteAcceptanceTestCase for the end-to-end regression
+        against the actual accept-invite endpoint.
+        """
+        email = "leo@example.com"
+        OrganizationUser.objects.create(
+            organization=self.organization,
+            email=email,
+            role=OrganizationUserRole.MANAGER,
+        )
+        self.client.get(
+            "/api/0/",
+            REMOTE_ADDR=_TRUSTED_PROXY,
+            HTTP_X_AUTHENTIK_EMAIL=email,
+            HTTP_X_AUTHENTIK_GROUPS="glitchtip-member",
+        )
+        user = User.objects.get(email=email)
+        # The pending invite is still the only row for this org/email --
+        # no competing OrganizationUser(user=user) row was created.
+        memberships = OrganizationUser.objects.filter(
+            organization=self.organization, email__iexact=email
+        )
+        self.assertEqual(memberships.count(), 1)
+        self.assertTrue(memberships.first().pending)
+        self.assertFalse(
+            OrganizationUser.objects.filter(
+                organization=self.organization, user=user
+            ).exists()
+        )

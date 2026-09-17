@@ -432,7 +432,15 @@ async def accept_invite(
         # If the resolved user is already a member of this org the
         # (user, organization) unique_together constraint trips; let
         # that propagate rather than swallowing it — the caller should
-        # see the conflict, not a silently-rewritten membership.
+        # see the conflict, not a silently-rewritten membership. The
+        # routine version of this collision -- Authentik's own
+        # JIT role-sync racing ahead of this exact invite on the
+        # user's very own accept request -- is prevented one layer
+        # down, in apps.authentik_auth.provisioning.sync_org_memberships,
+        # which skips auto-creating a membership for an org that still
+        # has a pending invite matching the user's email. What's left
+        # here is a genuine pre-existing membership, which should
+        # surface as an error.
         org_user.user = await User.objects.aget(id=request.auth.user_id)
         org_user.email = None
         await org_user.asave()
